@@ -6,8 +6,10 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 @Configuration
 public class WebConfig implements WebMvcConfigurer {
+    @org.springframework.beans.factory.annotation.Value("${workspace.allowed-origins}")
+    private String[] origins;
     @Override
     public void addCorsMappings(CorsRegistry registry) {
-        registry.addMapping("/api/**").allowedOrigins("http://localhost:5173", "http://localhost:4173").allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS");
+        registry.addMapping("/api/**").allowedOrigins(origins).allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS");
     }
 }

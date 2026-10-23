@@ -1,40 +1,54 @@
 package com.rajesh.workspace.dashboard;
 
-import java.util.List;
-import java.util.Map;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import com.rajesh.workspace.records.RecordService;
+import org.springframework.web.bind.annotation.*;
+import java.util.*;
+import java.time.LocalDate;
+import java.time.DayOfWeek;
+import java.math.BigDecimal;
 
 @RestController
 @RequestMapping("/api/dashboard")
 public class DashboardController {
+    private final RecordService service;
+    public DashboardController(RecordService service) { this.service=service; }
+    private LocalDate date(Map<String,Object> record) { return LocalDate.parse(record.get("date").toString()); }
+    private int minutes(Map<String,Object> record) { return ((Number)record.get("minutes")).intValue(); }
     @GetMapping
-    public Map<String, Object> dashboard() {
-        return Map.of(
-            "stats", Map.of("focusedTime", "6h 10m", "habits", "3 / 5", "next30Days", "₹18,400", "dayScore", 78),
-            "timeline", List.of(
-                Map.of("time", "07:00", "title", "Morning routine", "subtitle", "Walk · breakfast · plan", "status", "done", "type", "wellbeing"),
-                Map.of("time", "09:30", "title", "Office hours", "subtitle", "Focus block · 09:30 — 18:30", "status", "active", "type", "work"),
-                Map.of("time", "19:30", "title", "DSA practice", "subtitle", "Arrays & hashing · 45 min", "status", "planned", "type", "learning"),
-                Map.of("time", "21:00", "title", "System design course", "subtitle", "Video 12 · consistency models", "status", "planned", "type", "course")
-            ),
-            "courses", List.of(
-                Map.of("name", "DSA Patterns", "progress", 42, "completed", 50, "total", 120, "subtitle", "30-day sprint · 120 problems", "color", "dsa"),
-                Map.of("name", "System Design / HLD", "progress", 28, "completed", 12, "total", 42, "subtitle", "Architecture fundamentals", "color", "hld"),
-                Map.of("name", "LLD with Java", "progress", 16, "completed", 8, "total", 50, "subtitle", "Patterns · SOLID · practice", "color", "lld")
-            ),
-            "loans", List.of(
-                Map.of("name", "Arjun Kapoor", "initials", "AK", "amount", "₹8,000", "dueDate", "12 Oct", "status", "Reminder soon", "tone", "warn", "color", "amber", "note", "Personal loan · sent 12 Sep 2026"),
-                Map.of("name", "Neha Shah", "initials", "NS", "amount", "₹3,500", "dueDate", "28 Oct", "status", "On track", "tone", "quiet", "color", "pink", "note", "Travel split · sent 28 Sep 2026")
-            ),
-            "finances", List.of(
-                Map.of("name", "Index fund SIP", "date", "05 Oct", "amount", "₹4,000", "status", "scheduled", "tone", "good"),
-                Map.of("name", "Emergency fund SIP", "date", "10 Oct", "amount", "₹2,000", "status", "scheduled", "tone", "good"),
-                Map.of("name", "Rent auto pay", "date", "01 Oct", "amount", "₹28,000", "status", "paid", "tone", "good"),
-                Map.of("name", "Learning platform", "date", "15 Oct", "amount", "₹1,499", "status", "review", "tone", "warn"),
-                Map.of("name", "Music subscription", "date", "21 Oct", "amount", "₹119", "status", "active", "tone", "quiet")
-            )
-        );
+    public Map<String,Object> dashboard(@RequestParam(required=false) LocalDate date) {
+        LocalDate day=date==null?LocalDate.now():date;
+        var blocks=service.list("time-blocks");
+        var timeline=blocks.stream().filter(x->date(x).equals(day)).sorted(Comparator.comparing(x->x.get("time").toString())).toList();
+        var courses=service.list("courses");
+        courses.forEach(x->x.put("progress",Math.round(((Number)x.get("completed")).doubleValue()*100/((Number)x.get("total")).intValue())));
+        var finances=service.list("finances").stream().sorted(Comparator.comparing(this::date)).toList();
+        var upcoming=finances.stream().filter(x->!x.get("status").equals("paid")&&!date(x).isBefore(day)&&date(x).isBefore(day.plusDays(30))).toList();
+        Map<String,BigDecimal> categories=new LinkedHashMap<>();
+        for(var item:upcoming) categories.merge(item.get("category").toString(),new BigDecimal(item.get("amount").toString()),BigDecimal::add);
+        var total=categories.values().stream().reduce(BigDecimal.ZERO,BigDecimal::add);
+        var loans=service.list("loans");
+        loans.forEach(x->{
+            var balance=new BigDecimal(x.get("amount").toString()).subtract(new BigDecimal(x.get("repaid").toString()));
+            x.put("outstanding",balance);
+            x.put("status",balance.signum()==0?"Repaid":LocalDate.parse(x.get("dueDate").toString()).isBefore(day)?"Overdue":"On track");
+        });
+        var habits=service.list("habits");
+        habits.forEach(x->x.put("completed",((List<?>)x.get("completedDates")).contains(day.toString())));
+        long habitsDone=habits.stream().filter(x->Boolean.TRUE.equals(x.get("completed"))).count();
+        long done=timeline.stream().filter(x->x.get("status").equals("done")).count();
+        int focus=timeline.stream().filter(x->x.get("status").equals("done")&&!x.get("type").equals("wellbeing")).mapToInt(this::minutes).sum();
+        Set<LocalDate> learningDays=new HashSet<>();
+        blocks.stream().filter(x->x.get("status").equals("done")&&Set.of("learning","course").contains(x.get("type"))).forEach(x->learningDays.add(date(x)));
+        LocalDate cursor=learningDays.contains(day)?day:day.minusDays(1); int streak=0;
+        while(learningDays.contains(cursor)) { streak++; cursor=cursor.minusDays(1); }
+        var week=new ArrayList<Map<String,Object>>();
+        LocalDate monday=day.with(DayOfWeek.MONDAY);
+        for(int i=0;i<7;i++) {
+            LocalDate weekday=monday.plusDays(i);
+            var completed=blocks.stream().filter(x->date(x).equals(weekday)&&x.get("status").equals("done")).toList();
+            week.add(Map.of("date",weekday,"work",completed.stream().filter(x->x.get("type").equals("work")).mapToInt(this::minutes).sum(),"study",completed.stream().filter(x->Set.of("learning","course").contains(x.get("type"))).mapToInt(this::minutes).sum()));
+        }
+        int count=timeline.size()+habits.size();
+        return Map.of("date",day,"settings",service.settings(),"stats",Map.of("focusedMinutes",focus,"habitsDone",habitsDone,"habitsTotal",habits.size(),"next30Days",total,"dayScore",count==0?0:Math.round((done+habitsDone)*100.0/count),"streak",streak),"timeline",timeline,"courses",courses,"finances",finances,"moneyCategories",categories,"loans",loans,"habits",habits,"week",week);
     }
 }
